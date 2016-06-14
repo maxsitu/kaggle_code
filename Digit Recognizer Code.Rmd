@@ -1,0 +1,303 @@
+---
+title: "Digit Recognizer"
+author: "Carolyn"
+date: "November 21, 2015"
+output: html_document
+---
+
+The goal in this competition is to take an image of a handwritten single digit, and determine what that digit is. For more details see <https://www.kaggle.com/c/digit-recognizer>.
+
+1. Setting the working directory.
+```{r}
+wd<-'D:/Data Science/kaggle/Digit Recognizer'
+if(getwd()!=wd){
+  setwd(wd)
+}
+```
+
+2. Loading libraries.
+```{r, warning=FALSE}
+library(readr)
+library(ggplot2)
+library(proto)
+library(caret)
+library(randomForest)
+```
+
+3. Get data into R.
+```{r}
+train <- read.csv('train.csv')
+test <- read.csv('test.csv')
+cat(sprintf("Training set has %d rows and %d columns\n", nrow(train), ncol(train)))
+cat(sprintf("Test set has %d rows and %d columns\n", nrow(test), ncol(test)))
+```
+
+4.Example Handwritten Digit
+```{R}
+labels   <- train[,1]
+features <- train[,-1]
+
+set.seed(1)
+rowsToPlot <- sample(1:nrow(train), 1)
+
+rowToMatrix <- function(row) {
+    intensity <- as.numeric(row)/max(as.numeric(row))
+    return(t(matrix((rgb(intensity, intensity, intensity)), 28, 28)))
+}
+
+geom_digit <- function (digits, labels) GeomRasterDigit$new(geom_params = list(digits=digits), stat = "identity", position = "identity", data = NULL, inherit.aes = TRUE)
+
+GeomRasterDigit <- proto(ggplot2:::GeomRaster, expr={
+  draw_groups <- function(., data, scales, coordinates, digits, ...) {
+    bounds <- coord_transform(coordinates, data.frame(x = c(-Inf, Inf), y = c(-Inf, Inf)), scales)
+    x_rng <- range(bounds$x, na.rm = TRUE)
+    y_rng <- range(bounds$y, na.rm = TRUE)
+    rasterGrob(as.raster(rowToMatrix(digits[data$rows,])), x_rng[1], y_rng[1], diff(x_rng), diff(y_rng), default.units = "native", just = c("left","bottom"), interpolate = FALSE)
+  }
+})
+
+p <- ggplot(data.frame(rows=rowsToPlot, labels=labels[rowsToPlot]), aes(x=.1, y=.9, rows=rows, label=labels)) + geom_blank() + xlim(0,1) + ylim(0,1) + xlab("") + ylab("") + 
+  #facet_wrap(~ rows, ncol=7) +
+  geom_digit(features) +
+  geom_text(colour="#53cfff") +
+  theme(strip.background = element_blank(),
+        strip.text.x = element_blank(),
+        axis.text.x = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks = element_blank(),
+        axis.line = element_blank()) +
+  ggtitle("Example Handwritten Digit")
+
+ggsave("example_digit.png", p, width=10, height=10)
+```
+
+5 Pre-processing
+
+Let's see if we can reduce the number of variables. We will check for all 784 variables for the combined test and train data and remove the columns where there is only one value.
+
+```{r}
+train_n_test <- rbind(train[,2:785],test)
+
+one_value <- numeric()
+for (i in 1:784) {
+        freq <- table(train_n_test[,i])
+        if (dim(freq) == 1) {
+             one_value <- rbind(one_value, i)  
+        }
+}
+
+cat(sprintf("%d columns contain no information.", dim(one_value)[1]))
+cat(sprintf("Approximately %0.0f%% variables reduced.", dim(one_value)[1]/dim(test)[2]*100))
+```
+
+We will now create the reduced train and test sets.
+
+```{r}
+train_reduced <- train[,-(one_value+1)]
+test_reduced <- test[,-one_value]
+```
+
+Now we can use the reduced datasets to do some benchmarking.
+
+6.Random Forest Benchmark
+
+Observations used in training: 42000, number of trees: default 500
+
+```{r}
+numTrain <- 42000
+
+rows <- sample(1:nrow(train_reduced), numTrain)
+labelsRF <- as.factor(train_reduced[rows,1])
+trainRF <- train_reduced[rows,-1]
+
+rf <- randomForest(trainRF, labelsRF, xtest=test_reduced)
+predictions <- data.frame(ImageId=1:nrow(test_reduced), Label=rf$test$predicted)
+head(predictions)
+
+write_csv(predictions, "rf_benchmark6.csv") 
+```
+
+Out of bag estimate of error rate: 3.3%. After submission, the accuracy was 96.757%. Runtime is about 1 hour 7 minutes.
+
+7. Additional pre-processing
+
+Next we will use several machine learning algorithms to predict the result. But before that, we need to do some scaling of the variables so that when we calculate the cost function, the log calculation won't be a problem.
+
+```{r}
+train_scaled <- cbind(train_reduced[,1], train_reduced[,2:720]/(255*719))
+test_scaled <- test_reduced/(255*719)
+```
+
+Next we need to seperate the training set into training and cross validation sets.
+
+```{r}
+inTrain <- createDataPartition(y = train_scaled[,1], p = 0.7, list = FALSE)
+training <- train_scaled[inTrain,]
+cross_validation <- train_scaled[-inTrain,]
+```
+
+Also, in order for matrix calculation, we will transform our data into matrix format.
+
+```{r}
+X = training[,-1]
+Y = training[,1]
+m = length(Y)
+n = ncol(X)
+X = cbind(rep(1, m),X)
+X_matrix = as.matrix(X)
+
+X_cv = cross_validation[,-1]
+Y_cv = cross_validation[,1]
+m_cv = length(Y_cv)
+X_cv = cbind(rep(1, m_cv),X_cv)
+X_cv_matrix = as.matrix(X_cv)
+```
+
+8. Multi-class Classification
+
+We will start from the simplest machine learning algorithm: logistic regression. Applying here, since we have 10 digits to predict, it becomes multi-class classification
+
+8.1 Sigmoid & Cost Function
+
+```{r}
+g <- function(z){
+        sigmoid <- 1/(1+exp(-z))
+        return (sigmoid)
+}
+
+J <- function(theta, y, X){
+        sigmoid <- g(X%*%theta)
+        cost <- sum(-y*log(sigmoid)-(1-y)*log(1-sigmoid))/m + lambda*(t(theta)%*%theta - theta[1]^2)/(2*m)
+        return (cost)
+}
+```
+
+
+8.2 Gradient
+
+```{r}
+gradient <- function(theta, y, X){
+        sigmoid <- g(X%*%theta)
+        grad = t(as.matrix(sigmoid-y))%*%X/m
+        theta[1] <- 0
+        grad = grad + lambda*theta/m
+        return (grad)
+}
+```
+
+8.3 One vs. all classification
+
+Training:
+
+```{r}
+num_labels = 10
+
+oneVsAll_LBFGSB <- function(num_labels, lambda, X, Y){
+        all_theta <- matrix(0, num_labels, n+1)
+        for (c in 1:num_labels){
+                initial_theta = rep(0, n+1)
+                y <- Y == (c-1)
+                y <- y + 0
+                J2 <- function(a){
+                        return (J(a,y,X))
+                }
+                gradient2 <- function(b){
+                        return (gradient(b,y,X))
+                }
+                theta_optim <- optim(par=initial_theta,fn=J2, gr = gradient2, method = "L-BFGS-B", control = list(trace = TRUE))
+                theta <-theta_optim$par
+                all_theta[c,] = theta
+        }
+        return (all_theta)
+}
+
+oneVsAll_BFGS <- function(num_labels, lambda, X, Y){
+        all_theta <- matrix(0, num_labels, n+1)
+        for (c in 1:num_labels){
+                initial_theta = rep(0, n+1)
+                y <- Y == (c-1)
+                y <- y + 0
+                J2 <- function(a){
+                        return (J(a,y,X))
+                }
+                gradient2 <- function(b){
+                        return (gradient(b,y,X))
+                }
+                theta_optim <- optim(par=initial_theta,fn=J2, gr = gradient2, method = "BFGS", control = list(maxit = 200, trace = TRUE))
+                theta <-theta_optim$par
+                all_theta[c,] = theta
+        }
+        return (all_theta)
+}
+
+lambda = 0.32/(255*719)
+all_theta <- oneVsAll_BFGS(num_labels, lambda, X_matrix, Y)
+```
+
+8.4 Prediction
+
+Prediction function:
+
+```{r}
+predictOneVsAll <- function(all_theta, X){
+        raw_result <- g(X%*%t(all_theta))
+        p = apply(raw_result,1,which.max)-1
+        return (p)
+}
+```
+
+Predicting on the training set:
+
+```{r}
+predTrain <- predictOneVsAll(all_theta, X_matrix)
+accuracyTrain <- sum(predTrain == Y)/m
+cat(sprintf("Accuracy on training set is %0.0f%%.", accuracyTrain*100))
+```
+
+Predicting on the cross validation set:
+
+```{r}
+predCV <- predictOneVsAll(all_theta, X_cv_matrix)
+accuracyCV <- sum(predCV == Y_cv)/m_cv
+cat(sprintf("Accuracy on cross validation set is %0.0f%%.", accuracyCV*100))
+```
+
+8.5 Model Selection
+
+Model selection for logistic regression is selecting the best lambda. Let's start from lambda = 0 then 0.01, and stack it up in multiples of 2.
+
+When lambda = 0, accuracy on cross validation set is 71.15%. 88.54%?
+When lambda = 0.01, accuracy on cross validation set is 71.15%. 83.12%?
+When lambda = 0.02, accuracy on cross validation set is 80.38%. 80.14%?
+When lambda = 0.04, accuracy on cross validation set is 76.41%. 76.41%
+When lambda = 0.08, accuracy on cross validation set is 72.56%. 72.56%
+
+It seems that lambda = 0.02 is the best choice. This is using the BFGS method. Let's try the L-BFGS-B now.
+
+When lambda = 0.01, accuracy on cross validation set is 83.75%.
+When lambda = 0.02, accuracy on cross validation set is %.
+When lambda = 0.04, accuracy on cross validation set is %.
+When lambda = 0.08, accuracy on cross validation set is %.
+
+
+
+
+
+
+
+
+
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r}
+summary(cars)
+```
+
+You can also embed plots, for example:
+
+```{r, echo=FALSE}
+plot(cars)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
