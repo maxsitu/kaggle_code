@@ -9,7 +9,7 @@ The goal in this competition is to take an image of a handwritten single digit, 
 
 1. Setting the working directory.
 ```{r}
-wd<-'D:/Data Science/kaggle/Digit Recognizer'
+wd<-'/Users/situ.ma/ML/kaggle_code'
 if(getwd()!=wd){
   setwd(wd)
 }
@@ -20,8 +20,8 @@ if(getwd()!=wd){
 library(readr)
 library(ggplot2)
 library(proto)
-library(caret)
-library(randomForest)
+#library(caret)
+#library(randomForest)
 ```
 
 3. Get data into R.
@@ -56,7 +56,14 @@ GeomRasterDigit <- proto(ggplot2:::GeomRaster, expr={
   }
 })
 
-p <- ggplot(data.frame(rows=rowsToPlot, labels=labels[rowsToPlot]), aes(x=.1, y=.9, rows=rows, label=labels)) + geom_blank() + xlim(0,1) + ylim(0,1) + xlab("") + ylab("") + 
+p <- ggplot(
+    data.frame(rows=rowsToPlot, labels=labels[rowsToPlot]), 
+    aes(x=.1, y=.9, rows=rows, label=labels)) + 
+  geom_blank() +
+  xlim(0,1) +
+  ylim(0,1) +
+  xlab("") +
+  ylab("") + 
   #facet_wrap(~ rows, ncol=7) +
   geom_digit(features) +
   geom_text(colour="#53cfff") +
@@ -79,7 +86,7 @@ Let's see if we can reduce the number of variables. We will check for all 784 va
 train_n_test <- rbind(train[,2:785],test)
 
 one_value <- numeric()
-for (i in 1:784) {
+for (i in 1:ncol(train_n_test)) {
         freq <- table(train_n_test[,i])
         if (dim(freq) == 1) {
              one_value <- rbind(one_value, i)  
@@ -123,6 +130,7 @@ Out of bag estimate of error rate: 3.3%. After submission, the accuracy was 96.7
 
 Next we will use several machine learning algorithms to predict the result. But before that, we need to do some scaling of the variables so that when we calculate the cost function, the log calculation won't be a problem.
 
+TODO: is this normalization?
 ```{r}
 train_scaled <- cbind(train_reduced[,1], train_reduced[,2:720]/(255*719))
 test_scaled <- test_reduced/(255*719)

@@ -1,0 +1,6 @@
+.RData
+.Rhistory
+*.iml
+*.png
+*.csv
+.idea/
